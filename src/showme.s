@@ -15,6 +15,19 @@ endstruc
 TERM        equ 0x0
 BUFSIZ      equ 256
 
+section .data
+JMPtable:
+    dq              specsymbHandle
+    dq ('b'-'%'-1)  DUP (showme_parse.NoHandle)
+    dq              bitHandle
+    dq              asciiHandle
+    dq              decHandle
+    dq ('f'-'d'-1)  DUP (showme_parse.NoHandle)
+    dq              floatHandle
+    dq ('s'-'f'-1)  DUP (showme_parse.NoHandle)
+    dq              szHandle
+    dq ('x'-'s'-1)  DUP (showme_parse.NoHandle)
+    dq              hexHandle
 
 section .rodata
 align 16
@@ -115,24 +128,12 @@ showme_parse:
 
     lea rdi, [.FormatDecay]
     push rdi
-    lea rdi, [.Trampoline]
+    lea rdi, [JMPtable]
     lea rdi, [rdi + (rcx - '%') * 8]
     jmp [rdi]
 
-.Trampoline:
-    dq              specsymbHandle
-    dq ('b'-'%'-1)  DUP (.NoHandle)
-    dq              bitHandle
-    dq              asciiHandle
-    dq              decHandle
-    dq ('f'-'d'-1)  DUP (.NoHandle)
-    dq              floatHandle
-    dq ('s'-'f'-1)  DUP (.NoHandle)
-    dq              szHandle
-    dq ('x'-'s'-1)  DUP (.NoHandle)
-    dq              hexHandle
-
 .NoHandle:
+    pop rax
     mov rdi, BUFSIZ-1
     call flush
 
@@ -345,7 +346,7 @@ bitHandle:
     ret
 
 ;---------------------------------------------------
-; Description: converts int to string 
+; Description: converts int from stack to string 
 ; Entry:    rsi = buffer current position ptr
 ;           rbp -> int value
 ; Exit:     rsi = buffer current position
@@ -353,60 +354,70 @@ bitHandle:
 ; Destroy:  rax, rdi, rdx, rcx, r8, r9, r11
 ;---------------------------------------------------
 decHandle:
+    mov edi, [rbp]
+    add rbp, 8
+    jmp decHandleRaw
+;---------------------------------------------------
+; Description: converts int from edi to string 
+; Entry:    rsi = buffer current position ptr
+;           edi = int value
+; Exit:     rsi = buffer current position
+; Destroy:  rax, rdi, rdx, rcx, r8, r9, r11
+;---------------------------------------------------
+decHandleRaw:
+    mov ecx, edi
+
     mov rdi, BUFSIZ-10
     call flush
 
-    mov edi, [rbp]
-    add rbp, 8
-
-    mov al, 9
-    test edi, edi
+    mov rax, 9
+    test ecx, ecx
     js .TwoComp
-    cmp edi, 999999999
+    cmp ecx, 999999999
     jbe .FindLen
     jmp .Div
 
 .TwoComp:
     mov byte [rsi], '-'
-    neg edi
+    neg ecx
     mov al, 10
-    cmp edi, 999999999
+    cmp ecx, 999999999
     ja .Div
 
 .FindLen:
-    mov ecx, 1000000000
+    mov edi, 1000000000
     mov edx, 0xCCCCCCCD
 
 .L1:
-    imul rcx, rdx
-    shr rcx, 35
+    imul rdi, rdx
+    shr rdi, 35
     dec al
-    cmp ecx, edi
+    cmp edi, ecx
     ja .L1
     xor r11, r11
     mov r11, rax
     inc r11
-    test edi, edi
+    test ecx, ecx
     je .DecZero
 
 .Div:
     mov edx, 0xCCCCCCCD
 
 .L2:
-    mov ecx, edi
-    imul rcx, rdx
-    shr rcx, 35
-    lea r8d, [rcx + rcx]
+    mov edi, ecx
+    imul rdi, rdx
+    shr rdi, 35
+    lea r8d, [rdi + rdi]
     lea r8d, [r8 + 4*r8]
-    mov r9d, edi
+    mov r9d, ecx
     sub r9d, r8d
 
     or r9b, 0x30
     movzx eax, al
     mov byte [rsi + rax], r9b
     dec al
-    cmp edi, 9
-    mov edi, ecx
+    cmp ecx, 9
+    mov ecx, edi
     ja .L2
 
     add rsi, r11
@@ -425,9 +436,6 @@ decHandle:
 ; Destroy:  rax, rdi, rdx, xmm0, xmm1, xmm2
 ;---------------------------------------------------
 floatHandle:
-    mov rdi, BUFSIZ - 31
-    call flush
-
     lea rdi, [MXCSR]
     stmxcsr [rdi]
     mov edx, [rdi]
@@ -471,29 +479,19 @@ floatHandle:
 .Positive:
     movsd xmm1, xmm0
 
-    push rbp
-
     movsd xmm2, xmm1
     roundsd xmm2, xmm2, 3
     subsd xmm1, xmm2
     movsd xmm2, [SCALE]
     mulsd xmm1, xmm2
-    cvtsd2si rax, xmm1
-    push rax
 
-    cvtsd2si rax, xmm0
-    push rax
+    cvtsd2si rdi, xmm0
+    call decHandleRaw
 
-
-    mov rbp, rsp
-    xor rax, rax
-    call decHandle
+    cvtsd2si rdi, xmm1
     mov byte [rsi], '.'
     inc rsi
-    call decHandle
-
-    add rsp, 16
-    pop rbp
+    call decHandleRaw
 
     lea rdi, [MXCSR]
     ldmxcsr [rdi]
