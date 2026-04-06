@@ -1,15 +1,15 @@
 default rel
 
 struc XMMCTX_s
-    .xmm0 resq 1
-    .xmm1 resq 1
-    .xmm2 resq 1
-    .xmm3 resq 1
-    .xmm4 resq 1
-    .xmm5 resq 1
-    .xmm6 resq 1
-    .xmm7 resq 1
-    .next resq 1
+    .xmm0   resq 1
+    .xmm1   resq 1
+    .xmm2   resq 1
+    .xmm3   resq 1
+    .xmm4   resq 1
+    .xmm5   resq 1
+    .xmm6   resq 1
+    .xmm7   resq 1
+    .next   resq 1
 endstruc
 
 TERM        equ 0x0
@@ -87,8 +87,11 @@ showme:
     movq [r13 + XMMCTX_s.xmm7],  xmm7
     mov  [r13 + XMMCTX_s.next],  r12
 
+    push r14
+
     call showme_parse   ; TODO: inline
     
+    pop r14
     pop r13
     pop rbx
     mov r11, r12
@@ -104,13 +107,24 @@ showme:
 ; Entry:	rbx = format string
 ;           rbp -> va_args
 ; Exit:     
-; Destroy:  rax, rdi, rsi, rdx, rcx, r8, r9, r11, rbx, rbp
+; Destroy:  rax, rdi, rsi, rdx, rcx, r8, r9, r11, rbx, rbp, r13, r14
 ;---------------------------------------------------
 showme_parse:
     lea rsi, [BUFFER]
-
+    xor r14, r14
 .FormatDecay:
 
+;   that block of code synchronizes variadic arguments on stack (rbp) and next float on stack
+    test r14, r14
+    jz .RBPisRelev
+    cmp rbp, r14
+    jl .RBPisRelev
+    
+    mov r14, 0x0
+    lea rdi, [XMMCTX + XMMCTX_s.next]
+    mov rbp, [rdi]
+
+.RBPisRelev:
     xor rcx, rcx
     mov cl, [rbx]
     inc rbx
@@ -433,7 +447,7 @@ decHandleRaw:
 ;           r13 -> current float in xmm buffer
 ; Exit:     rsi = buffer current position
 ;           r13 -> next float in xmm buffer
-; Destroy:  rax, rdi, rdx, xmm0, xmm1, xmm2
+; Destroy:  rax, rdi, rdx, rcx, xmm0, xmm1, xmm2
 ;---------------------------------------------------
 floatHandle:
     lea rdi, [MXCSR]
@@ -458,6 +472,12 @@ floatHandle:
     add rbp, 8
 
 .NextIsRelev:
+;   that block of code synchronizes variadic arguments on stack (rbp) and next float on stack
+    cmp r14, 0x0
+    jne .AlreadySkipping
+    mov r14, rax
+
+.AlreadySkipping:
     movq xmm0, [rax]
     add rax, 8
     mov [r13], rax
