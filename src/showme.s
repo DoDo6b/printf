@@ -1,22 +1,58 @@
 default rel
-section .data
+
+struc XMMCTX_s
+    .xmm0   resq 1
+    .xmm1   resq 1
+    .xmm2   resq 1
+    .xmm3   resq 1
+    .xmm4   resq 1
+    .xmm5   resq 1
+    .xmm6   resq 1
+    .xmm7   resq 1
+    .next   resq 1
+endstruc
 
 TERM        equ 0x0
-BUFSIZ      equ 64
+BUFSIZ      equ 256
 
-BUFFER:     db (BUFSIZ) DUP (0)
+section .data
+JMPtable:
+    dq              specsymbHandle
+    dq ('b'-'%'-1)  DUP (showme_parse.NoHandle)
+    dq              bitHandle
+    dq              asciiHandle
+    dq              decHandle
+    dq ('f'-'d'-1)  DUP (showme_parse.NoHandle)
+    dq              floatHandle
+    dq ('s'-'f'-1)  DUP (showme_parse.NoHandle)
+    dq              szHandle
+    dq ('x'-'s'-1)  DUP (showme_parse.NoHandle)
+    dq              hexHandle
+
+section .rodata
+align 16
+ABSMASK: 
+    dq 0x7FFFFFFFFFFFFFFF
+    dq 0x7FFFFFFFFFFFFFFF
+
+SCALE:      dq 1000000.
+HEXALPHABET db '0123456789ABCDEF'
+
+section .bss
+
+MXCSR:      resd 1
+BUFFER:     resb BUFSIZ
+XMMCTX: resb XMMCTX_s
 
 
 section .text
-
-HEXALPHABET db '0123456789ABCDEF'
 
 global showme
 
 ;---------------------------------------------------
 ; Description: showme driver
 ; Entry:	system V ABI va_args
-; Exit:     rax = exc
+; Exit:
 ; Destroy:  rax, rdi, rsi, rdx, rcx, r8, r9, r10, r11
 ;---------------------------------------------------
 showme:
@@ -32,13 +68,31 @@ showme:
     push rbp
     mov rbp, rsp
     add rbp, 8
+
     push r12
     mov r12, r11
+
     push rbx
     mov rbx, rdi
 
+    push r13
+    lea r13, [XMMCTX]
+    movq [r13 + XMMCTX_s.xmm0],  xmm0
+    movq [r13 + XMMCTX_s.xmm1],  xmm1
+    movq [r13 + XMMCTX_s.xmm2],  xmm2
+    movq [r13 + XMMCTX_s.xmm3],  xmm3
+    movq [r13 + XMMCTX_s.xmm4],  xmm4
+    movq [r13 + XMMCTX_s.xmm5],  xmm5
+    movq [r13 + XMMCTX_s.xmm6],  xmm6
+    movq [r13 + XMMCTX_s.xmm7],  xmm7
+    mov  [r13 + XMMCTX_s.next],  r12
+
+    push r14
+
     call showme_parse   ; TODO: inline
     
+    pop r14
+    pop r13
     pop rbx
     mov r11, r12
     pop r12
@@ -53,13 +107,24 @@ showme:
 ; Entry:	rbx = format string
 ;           rbp -> va_args
 ; Exit:     
-; Destroy:  rax, rdi, rsi, rdx, rcx, r8, r9, r11, rbx, rbp
+; Destroy:  rax, rdi, rsi, rdx, rcx, r8, r9, r11, rbx, rbp, r13, r14
 ;---------------------------------------------------
 showme_parse:
     lea rsi, [BUFFER]
-
+    xor r14, r14
 .FormatDecay:
 
+;   that block of code synchronizes variadic arguments on stack (rbp) and next float on stack
+    test r14, r14
+    jz .RBPisRelev
+    cmp rbp, r14
+    jl .RBPisRelev
+    
+    mov r14, 0x0
+    lea rdi, [XMMCTX + XMMCTX_s.next]
+    mov rbp, [rdi]
+
+.RBPisRelev:
     xor rcx, rcx
     mov cl, [rbx]
     inc rbx
@@ -77,22 +142,12 @@ showme_parse:
 
     lea rdi, [.FormatDecay]
     push rdi
-    lea rdi, [.Trampoline]
+    lea rdi, [JMPtable]
     lea rdi, [rdi + (rcx - '%') * 8]
     jmp [rdi]
 
-.Trampoline:
-    dq              specsymbHandle
-    dq ('b'-'%'-1)  DUP (.NoHandle)
-    dq              bitHandle
-    dq              asciiHandle
-    dq              decHandle
-    dq ('s'-'d'-1)  DUP (.NoHandle)
-    dq              szHandle
-    dq ('x'-'s'-1)  DUP (.NoHandle)
-    dq              hexHandle
-
 .NoHandle:
+    pop rax
     mov rdi, BUFSIZ-1
     call flush
 
@@ -305,7 +360,7 @@ bitHandle:
     ret
 
 ;---------------------------------------------------
-; Description: converts int to string 
+; Description: converts int from stack to string 
 ; Entry:    rsi = buffer current position ptr
 ;           rbp -> int value
 ; Exit:     rsi = buffer current position
@@ -313,60 +368,70 @@ bitHandle:
 ; Destroy:  rax, rdi, rdx, rcx, r8, r9, r11
 ;---------------------------------------------------
 decHandle:
+    mov edi, [rbp]
+    add rbp, 8
+    jmp decHandleRaw
+;---------------------------------------------------
+; Description: converts int from edi to string 
+; Entry:    rsi = buffer current position ptr
+;           edi = int value
+; Exit:     rsi = buffer current position
+; Destroy:  rax, rdi, rdx, rcx, r8, r9, r11
+;---------------------------------------------------
+decHandleRaw:
+    mov ecx, edi
+
     mov rdi, BUFSIZ-10
     call flush
 
-    mov edi, [rbp]
-    add rbp, 8
-
-    mov al, 9
-    test edi, edi
+    mov rax, 9
+    test ecx, ecx
     js .TwoComp
-    cmp edi, 999999999
+    cmp ecx, 999999999
     jbe .FindLen
     jmp .Div
 
 .TwoComp:
     mov byte [rsi], '-'
-    neg edi
+    neg ecx
     mov al, 10
-    cmp edi, 999999999
+    cmp ecx, 999999999
     ja .Div
 
 .FindLen:
-    mov ecx, 1000000000
+    mov edi, 1000000000
     mov edx, 0xCCCCCCCD
 
 .L1:
-    imul rcx, rdx
-    shr rcx, 35
+    imul rdi, rdx
+    shr rdi, 35
     dec al
-    cmp ecx, edi
+    cmp edi, ecx
     ja .L1
     xor r11, r11
     mov r11, rax
     inc r11
-    test edi, edi
+    test ecx, ecx
     je .DecZero
 
 .Div:
     mov edx, 0xCCCCCCCD
 
 .L2:
-    mov ecx, edi
-    imul rcx, rdx
-    shr rcx, 35
-    lea r8d, [rcx + rcx]
+    mov edi, ecx
+    imul rdi, rdx
+    shr rdi, 35
+    lea r8d, [rdi + rdi]
     lea r8d, [r8 + 4*r8]
-    mov r9d, edi
+    mov r9d, ecx
     sub r9d, r8d
 
     or r9b, 0x30
     movzx eax, al
     mov byte [rsi + rax], r9b
     dec al
-    cmp edi, 9
-    mov edi, ecx
+    cmp ecx, 9
+    mov ecx, edi
     ja .L2
 
     add rsi, r11
@@ -374,4 +439,81 @@ decHandle:
 .DecZero:
     mov byte [rsi], '0'
     inc rsi
+    ret
+
+;---------------------------------------------------
+; Description: converts float to string 
+; Entry:    rsi = buffer current position ptr
+;           r13 -> current float in xmm buffer
+; Exit:     rsi = buffer current position
+;           r13 -> next float in xmm buffer
+; Destroy:  rax, rdi, rdx, rcx, xmm0, xmm1, xmm2
+;---------------------------------------------------
+floatHandle:
+    lea rdi, [MXCSR]
+    stmxcsr [rdi]
+    mov edx, [rdi]
+    mov eax, edx
+    and eax, 0x3FFF
+    or eax, 0x2000
+    mov [rdi], eax
+    ldmxcsr [rdi]
+    mov [rdi], edx
+
+    lea rax, [XMMCTX + XMMCTX_s.next]
+    cmp r13, rax
+    jl .RegLoad
+
+    mov rax, [r13]
+    cmp rax, rbp
+    jg .NextIsRelev
+
+    mov rax, rbp
+    add rbp, 8
+
+.NextIsRelev:
+;   that block of code synchronizes variadic arguments on stack (rbp) and next float on stack
+    cmp r14, 0x0
+    jne .AlreadySkipping
+    mov r14, rax
+
+.AlreadySkipping:
+    movq xmm0, [rax]
+    add rax, 8
+    mov [r13], rax
+    jmp .Loaded
+
+.RegLoad:
+    movq xmm0, [r13]
+    add r13, 8
+.Loaded:
+    xorpd xmm1, xmm1
+    ucomisd xmm1, xmm0
+    jbe .Positive
+
+    mov byte [rsi], '-'
+    inc rsi
+    lea rax, [ABSMASK]
+    andpd xmm0, [rax]
+    
+.Positive:
+    movsd xmm1, xmm0
+
+    movsd xmm2, xmm1
+    roundsd xmm2, xmm2, 3
+    subsd xmm1, xmm2
+    movsd xmm2, [SCALE]
+    mulsd xmm1, xmm2
+
+    cvtsd2si rdi, xmm0
+    call decHandleRaw
+
+    cvtsd2si rdi, xmm1
+    mov byte [rsi], '.'
+    inc rsi
+    call decHandleRaw
+
+    lea rdi, [MXCSR]
+    ldmxcsr [rdi]
+
     ret
