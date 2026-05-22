@@ -66,16 +66,16 @@ showme:
     push rsi        ; arg1
 
     push rbp
-    mov rbp, rsp
+    mov rbp, rsp    ; variadic args ptr
     add rbp, 8
 
     push r12
-    mov r12, r11
+    mov r12, r11    ; reloc backup of rsp
 
     push rbx
-    mov rbx, rdi
+    mov rbx, rdi    ; format string
 
-    push r13
+    push r13        ; current xmm in xmmctx
     lea r13, [XMMCTX]
     movq [r13 + XMMCTX_s.xmm0],  xmm0
     movq [r13 + XMMCTX_s.xmm1],  xmm1
@@ -87,7 +87,7 @@ showme:
     movq [r13 + XMMCTX_s.xmm7],  xmm7
     mov  [r13 + XMMCTX_s.next],  r12
 
-    push r14
+    push r14    ; points to begin of already processed xmms on stack (must be skipped)
 
     call showme_parse   ; TODO: inline
     
@@ -400,7 +400,7 @@ decHandleRaw:
 
 .FindLen:
     mov edi, 1000000000
-    mov edx, 0xCCCCCCCD
+    mov edx, 0xCCCCCCCD ; Magic to divide by 10
 
 .L1:
     imul rdi, rdx
@@ -415,7 +415,7 @@ decHandleRaw:
     je .DecZero
 
 .Div:
-    mov edx, 0xCCCCCCCD
+    mov edx, 0xCCCCCCCD ; Magic to divide by 10
 
 .L2:
     mov edi, ecx
@@ -466,7 +466,7 @@ floatHandle:
 
     mov rax, [r13]
     cmp rax, rbp
-    jg .NextIsRelev
+    jg .NextIsRelev ; field "next" would be used to load current xmm
 
     mov rax, rbp
     add rbp, 8
@@ -474,10 +474,10 @@ floatHandle:
 .NextIsRelev:
 ;   that block of code synchronizes variadic arguments on stack (rbp) and next float on stack
     cmp r14, 0x0
-    jne .AlreadySkipping
+    jne .Nothing2Skip
     mov r14, rax
 
-.AlreadySkipping:
+.Nothing2Skip:
     movq xmm0, [rax]
     add rax, 8
     mov [r13], rax
